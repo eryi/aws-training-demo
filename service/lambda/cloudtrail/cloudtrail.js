@@ -11,12 +11,19 @@
 // Please change these value to adapt to your configuration
 //
 var FILTER_CONFIG_BUCKET = 'BUCKETNAME';
-var FILTER_CONFIG_FILE   = 'filter_config.json';
 
 //
 // Nothing to change beyond this point
 //
-var FILTER_CONFIG  = '';
+var FILTER_CONFIG  = {
+   "source" : "iam|signin|sts",
+   "regexp" : "Password|AccessKey|PutRolePolicy|User|Token|Login",
+   "sns" : {
+      "region" : "REGION",
+      "endpointARN" : "",
+      "topicARN" : "TOPICARN"
+   }
+};
 
 console.log('Loading Lambda function');
 
@@ -24,21 +31,6 @@ console.log('Loading Lambda function');
 var aws = require('aws-sdk');
 var Q   = require('q');
 var fs  = require('fs');
-
-
-function init() {
-   var deferred = Q.defer();
-   if (FILTER_CONFIG === '') {
-      var s3     = new aws.S3({apiVersion: '2006-03-01'});
-      var params = { Bucket:FILTER_CONFIG_BUCKET, Key:FILTER_CONFIG_FILE };
-      var body   = s3.getObject(params).createReadStream().on('data', function(data) {
-         FILTER_CONFIG = JSON.parse(data);
-         console.log('Config : %j', FILTER_CONFIG);
-         deferred.resolve(FILTER_CONFIG);
-      });
-   }
-   return deferred.promise;
-}
 
 function sendNotification(msg, topicARN, endPointARN) {
     var sns = new aws.SNS({
@@ -138,72 +130,41 @@ function filter(file) {
   // returns an array containing every single matching records
   var cloudTrailLog = require(file);
   var records = cloudTrailLog.Records.filter(function(x) {
-    return x.eventSource.match(new RegExp(FILTER_CONFIG.source));
+    return x.eventSource.match(new RegExp(FILTER_CONFIG.source)) && x.eventName.match(new RegExp(FILTER_CONFIG.regexp));
   });
 
-  console.log("Filtered Records:");
-  console.log(records);
-
-  var deferred = Q.defer();
-  deferred.resolve(records);
-  return deferred.promise;
-}
-
-function notify(records) {
-
-  var deferredTasks = Array();
-
-  // search for record matching the regular expression
-  for (var i = 0; i < records.length; i++) {
-    if (records[i].eventName.match(new RegExp(FILTER_CONFIG.regexp))) {
-
-      // for each match, send an SNS notification
-      console.log('Sending notification #' + i + 1)
-      var message = "Event  : " + records[i].eventName + "\n" +
-      "Source : " + records[i].eventSource + "\n" +
-      "Params : " + JSON.stringify(records[i].requestParameters, null, '') + "\n" +
-      "Region : " + records[i].awsRegion + "\n"
-      var task = sendNotification(message, FILTER_CONFIG.sns.topicARN, '');
-      deferredTasks.push(task);
-    }
-  }
-
   if (records.length > 0) {
-    console.log("Done sending notifications");
+    console.log(records.length + " matching records found");
+    return sendNotification(JSON.stringify(records, null, 2), FILTER_CONFIG.sns.topicARN, '');
+  } else {
+    console.log("No matching records found");
   }
-
-  return Q.all(deferredTasks);
 }
 
-exports.handler = function(event, context) {
+exports.handler = function(event, context, callback) {
 
-   Q.allSettled(init()).then(function (result) {
+  console.log('Received event:');
+  console.log(JSON.stringify(event, null, '  '));
 
-      console.log('Received event:');
-      console.log(JSON.stringify(event, null, '  '));
+  var bucket = event.Records[0].s3.bucket.name;
+  var key    = event.Records[0].s3.object.key;
 
-      var bucket = event.Records[0].s3.bucket.name;
-      var key    = event.Records[0].s3.object.key;
-
-     // Download from S3, Gunzip, Filter and send notifications
-     download(bucket, key)
-     .then(extract)
-     .then(filter)
-     .then(notify)
-     .catch(function (error) {
-       // Handle any error from all above steps
-       console.error(
-         'Error while handling ' + bucket + '/' + key +
-         '\nError: ' + error
-       );
-     })
-     .done(function() {
-       console.log(
-         'Finished handling ' + bucket + '/' + key
-       );
-       context.done();
-     });
-
-  }); //init
-
+  // Download from S3, Gunzip, Filter and send notifications
+  download(bucket, key)
+    .then(extract)
+    .then(filter)
+    .catch(function (error) {
+     // Handle any error from all above steps
+      console.error(
+        'Error while handling ' + bucket + '/' + key +
+        '\nError: ' + error
+      );
+      callback(error);
+    })
+    .done(function() {
+      console.log(
+        'Finished handling ' + bucket + '/' + key
+      );
+      callback();
+    });
 };

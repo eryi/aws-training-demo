@@ -1,4 +1,4 @@
-# 
+#
 # Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance with the License. A copy of the License is located at
@@ -57,7 +57,12 @@ cat > role_execution_policy.json <<EOF
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["logs:PutLogEvents"],
+      "Action": [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams"
+      ],
       "Resource": "arn:aws:logs:*:*:*"
     },
     {
@@ -83,13 +88,8 @@ aws iam put-role-policy --role-name $ROLEEXECNAME --policy-name $POLICYEXECNAME 
 status "Uploading configuration file"
 cp cloudtrail.js cloudtrail.js.orig
 sed -i $SED_OPTS "/^var FILTER_CONFIG_BUCKET =/s/BUCKETNAME/$BUCKETNAME/g" cloudtrail.js
-
-cp filter_config.json filter_config.json.orig
-sed -i $SED_OPTS "s/REGION/$REGION/g" filter_config.json
-sed -i $SED_OPTS "s/TOPICARN/$TOPIC_ARN/g" filter_config.json
-
-# Upload Lambda function to configuration bucket
-aws s3 cp filter_config.json s3://$BUCKETNAME/filter_config.json --region $REGION --profile $PROFILE
+sed -i $SED_OPTS "s/REGION/$REGION/g" cloudtrail.js
+sed -i $SED_OPTS "s/TOPICARN/$TOPIC_ARN/g" cloudtrail.js
 
 #
 # Package the lambda function
@@ -102,10 +102,13 @@ rm cloudtrail.zip ; zip -r cloudtrail.zip cloudtrail.js node_modules -x node_mod
 #
 # Upload the function
 #
+status "Waiting for IAM role to be available to lambda"
+# wait for IAM role to be available to lambda - :-(
+# If you get error "The role defined for the function cannot be assumed by Lambda", try sleeping even longer
+sleep 10
 status "Uploading Lambda function"
-sleep 5 #wait for IAM role to be available to lambda - :-(
 
-FUNCTION_ARN=$(aws lambda create-function --profile $PROFILE --region $REGION --zip-file fileb://./cloudtrail.zip --function-name $FUNCTIONNAME --runtime nodejs --role "$ROLE_EXEC_ARN" --handler cloudtrail.handler --query FunctionArn --output text)
+FUNCTION_ARN=$(aws lambda create-function --profile $PROFILE --region $REGION --zip-file fileb://./cloudtrail.zip --function-name $FUNCTIONNAME --runtime nodejs8.10 --role "$ROLE_EXEC_ARN" --handler cloudtrail.handler --query FunctionArn --output text)
 
 #
 # Add permission to authorize S3 bucket to invoke Lambda
